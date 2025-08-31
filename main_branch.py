@@ -1,5 +1,3 @@
-# Model from BioBGT (Main branch)
-
 from itertools import product
 
 import torch
@@ -86,8 +84,6 @@ class GraphTransformer(nn.Module):
 
         output = self.embedding(x) if node_depth is None else self.embedding(x, node_depth.view(-1,))
 
-        #DE = self.embedding_de(degree_matrix)
-        #PE = self.embedding_abs_pe(abs_pe)
         VE = self.embedding_ve(VE)
         output = output + VE
 
