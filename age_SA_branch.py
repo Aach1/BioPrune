@@ -1,6 +1,6 @@
 # Age sensitive attribute branch from BioBGT
 
-# -*- coding: utf-8 -*-
+
 from itertools import product
 
 import torch
