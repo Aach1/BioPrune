@@ -1,0 +1,156 @@
+# Pruning Mask from XTranPrune
+
+def generate_pruning_mask(main_attrs_final, SA_attrs_final, prun_iter_cnt, verbose=2):
+    main_mask = []
+    prun_mask = []
+
+    num_blocks, num_heads, num_tokens = (
+        main_attrs_final.shape[0],
+        main_attrs_final.shape[1],
+        main_attrs_final.shape[2],
+    )
+
+    for blk_idx in range(main_attrs_final.shape[0]):
+        main_mask_blk = []
+        prun_mask_blk = []
+        for h in range(main_attrs_final.shape[1]):
+            # Generating the main mask
+            main_attrs_flt = main_attrs_final[blk_idx][h].flatten()
+
+            threshold = torch.quantile(
+                main_attrs_flt, 1 - config["prune"]["main_mask_retain_rate"]
+            )  # (this param)% of the most important main params will be retained
+
+            main_mask_blk_head = (main_attrs_final[blk_idx][h] < threshold).float()
+
+            # Generating the pruning mask from SA branch
+            can_be_pruned = SA_attrs_final[blk_idx][h] * main_mask_blk_head
+            can_be_pruned_flt = can_be_pruned.flatten()
+
+            k = int(
+                config["prune"]["pruning_rate"] * main_mask_blk_head.sum()
+            )  # Pruning Pruning_rate% of the paramters allowed by the main branch to be pruned
+
+            top_k_values, top_k_indices = torch.topk(can_be_pruned_flt, k)
+            prun_mask_blk_head = torch.ones_like(can_be_pruned_flt)
+            prun_mask_blk_head[top_k_indices] = 0
+
+            prun_mask_blk_head = prun_mask_blk_head.reshape(
+                (main_attrs_final.shape[2], main_attrs_final.shape[3])
+            )
+            main_mask_blk.append(main_mask_blk_head)
+            prun_mask_blk.append(prun_mask_blk_head)
+
+            if verbose == 2 and prun_iter_cnt == 0:
+                print(
+                    f"#params pruned in head {h+1}: {(num_tokens*num_tokens) - prun_mask_blk_head.sum()}/{(num_tokens*num_tokens)} \
+                    | Rate: {((num_tokens*num_tokens) - prun_mask_blk_head.sum())/(num_tokens*num_tokens)}"
+                )
+
+        main_mask_blk = torch.stack(main_mask_blk, dim=0)
+        prun_mask_blk = torch.stack(prun_mask_blk, dim=0)
+        main_mask.append(main_mask_blk)
+        prun_mask.append(prun_mask_blk)
+        if verbose == 2 and prun_iter_cnt == 0:
+            print(
+                f"@@@ #params pruned in block {blk_idx+1}: {(num_tokens*num_tokens*num_heads) - prun_mask_blk.sum()}/{(num_tokens*num_tokens*num_heads)} \
+                | Rate: {((num_tokens*num_tokens*num_heads) - prun_mask_blk.sum())/(num_tokens*num_tokens*num_heads)}"
+            )
+
+    main_mask = torch.stack(main_mask, dim=0)
+    prun_mask = torch.stack(prun_mask, dim=0)
+
+    # NEEDS FIXING: generalize it LATER
+    if prun_mask.shape[0] < num_blocks:
+        ones_tensor = torch.ones(
+            (num_blocks - prun_mask.shape[0],) + prun_mask.shape[1:],
+            dtype=prun_mask.dtype,
+            device=prun_mask.device,
+        )
+
+        # Concatenate the original tensor with the ones tensor along the first dimension
+        prun_mask = torch.cat([prun_mask, ones_tensor], dim=0)
+
+    return main_mask, prun_mask
+
+
+def generate_pruning_mask_block_agnostic(
+    main_attrs_final, SA_attrs_final, prun_iter_cnt, verbose=2
+):
+    num_blocks, num_heads, num_tokens = (
+        main_attrs_final.shape[0],
+        main_attrs_final.shape[1],
+        main_attrs_final.shape[2],
+    )
+
+    print("QQQ1")
+    for b in range(num_blocks):
+        for h in range(num_heads):
+            print(f"Block {b+1}, Head {h+1}")
+            print(get_stat(main_attrs_final[b][h]))
+            print()
+    print()
+
+    print("QQQ2")
+    for b in range(num_blocks):
+        for h in range(num_heads):
+            print(f"Block {b+1}, Head {h+1}")
+            print(get_stat(SA_attrs_final[b][h]))
+            print()
+    print()
+
+    # Generating the main mask
+    main_attrs_flt = main_attrs_final.flatten()
+
+    # (this param)% of the most important main params will be retained
+    threshold = torch.quantile(
+        main_attrs_flt, 1 - config["prune"]["main_mask_retain_rate"]
+    )
+
+    main_mask = (main_attrs_flt < threshold).float()
+
+    # Generating the pruning mask from SA branch
+    SA_attrs_flt = SA_attrs_final.flatten()
+    can_be_pruned = SA_attrs_flt * main_mask
+
+    print("QQQ3")
+    temp = can_be_pruned.reshape((num_blocks, num_heads, num_tokens, num_tokens))
+    for b in range(num_blocks):
+        for h in range(num_heads):
+            print(f"Block {b+1}, Head {h+1}")
+            print(get_stat(temp[b][h]))
+            print()
+    print()
+
+    # Pruning Pruning_rate% of the paramters allowed by the main branch to be pruned
+    k = int(config["prune"]["pruning_rate"] * main_mask.sum())
+
+    top_k_values, top_k_indices = torch.topk(can_be_pruned, k)
+    print("QQQ4")
+    print(top_k_indices)
+    print()
+    prun_mask = torch.ones_like(can_be_pruned)
+    prun_mask[top_k_indices] = 0
+
+    main_mask = main_mask.reshape((num_blocks, num_heads, num_tokens, num_tokens))
+    prun_mask = prun_mask.reshape((num_blocks, num_heads, num_tokens, num_tokens))
+
+    # printing stats
+    for b in range(num_blocks):
+        for h in range(num_heads):
+            prun_mask_blk_head = prun_mask[b][h]
+
+            if verbose == 2:
+                print(
+                    f"#params pruned in head {h+1}: {(num_tokens*num_tokens) - prun_mask_blk_head.sum()}/{(num_tokens*num_tokens)} \
+                    | Rate: {((num_tokens*num_tokens) - prun_mask_blk_head.sum())/(num_tokens*num_tokens)}"
+                )
+
+        prun_mask_blk = prun_mask[b]
+        if verbose == 2:
+            print(
+                f"@@@ #params pruned in block {b+1}: {(num_tokens*num_tokens*num_heads) - prun_mask_blk.sum()}/{(num_tokens*num_tokens*num_heads)} \
+                | Rate: {((num_tokens*num_tokens*num_heads) - prun_mask_blk.sum())/(num_tokens*num_tokens*num_heads)}"
+            )
+
+    return main_mask, prun_mask
